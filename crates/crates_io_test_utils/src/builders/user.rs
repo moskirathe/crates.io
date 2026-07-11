@@ -22,6 +22,7 @@ static ENCRYPTED_TOKEN: LazyLock<Vec<u8>> = LazyLock::new(|| {
 /// If you want to test logic that happens as part of signing up or logging in,
 pub struct UserBuilder<'a> {
     username: &'a str,
+    gh_login: Option<&'a str>,
 }
 
 impl<'a> UserBuilder<'a> {
@@ -30,17 +31,26 @@ impl<'a> UserBuilder<'a> {
     pub fn new() -> Self {
         Self {
             username: "octocat",
+            gh_login: None,
         }
     }
 
     pub fn with_username(self, username: &'a str) -> Self {
-        Self { username }
+        Self { username, ..self }
+    }
+
+    pub fn with_gh_login(self, gh_login: &'a str) -> Self {
+        Self {
+            gh_login: Some(gh_login),
+            ..self
+        }
     }
 
     pub fn build(self) -> User {
+        let gh_login = self.gh_login.unwrap_or(self.username);
         User {
             id: 1,
-            gh_login: self.username.into(),
+            gh_login: gh_login.into(),
             name: Some("The Octocat".into()),
             gh_id: 123,
             gh_avatar: None,
@@ -55,9 +65,10 @@ impl<'a> UserBuilder<'a> {
     }
 
     pub fn new_user(self) -> NewUser<'a> {
+        let gh_login = self.gh_login.unwrap_or(self.username);
         NewUser::builder()
             .gh_id(next_gh_id())
-            .gh_login(self.username)
+            .gh_login(gh_login)
             .username(self.username)
             .gh_encrypted_token(&ENCRYPTED_TOKEN)
             .build()
@@ -88,6 +99,11 @@ impl<'a> OauthGithubBuilder<'a> {
             login: &user.username,
             avatar: Some("http://example.com/icon-the-first.png"),
         }
+    }
+
+    pub fn with_login(mut self, login: &'a str) -> Self {
+        self.login = login;
+        self
     }
 
     pub async fn insert(self, conn: &mut AsyncPgConnection) {

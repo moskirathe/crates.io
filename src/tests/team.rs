@@ -32,7 +32,7 @@ async fn not_github() {
         .add_named_owner("foo_not_github", "dropbox:foo:foo")
         .await;
     assert_snapshot!(response.status(), @"400 Bad Request");
-    assert_snapshot!(response.text(), @r#"{"errors":[{"detail":"unknown organization handler, only 'github:org:team' is supported"}]}"#);
+    assert_snapshot!(response.text(), @r#"{"errors":[{"detail":"unknown prefix; valid prefixes are `cratesio:` and `github:`"}]}"#);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -63,7 +63,7 @@ async fn one_colon() {
 
     let response = token.add_named_owner("foo_one_colon", "github:foo").await;
     assert_snapshot!(response.status(), @"400 Bad Request");
-    assert_snapshot!(response.text(), @r#"{"errors":[{"detail":"missing github team argument; format is github:org:team"}]}"#);
+    assert_snapshot!(response.text(), @r#"{"errors":[{"detail":"`foo` is already an owner"}]}"#);
 }
 
 #[tokio::test(flavor = "multi_thread")]

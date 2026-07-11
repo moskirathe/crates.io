@@ -228,6 +228,29 @@ impl Crate {
         Ok(users.chain(teams).collect())
     }
 
+    pub async fn owner_remove_by_user_id(
+        &self,
+        mut conn: &AsyncPgConnection,
+        user_id: i32,
+    ) -> Result<(), OwnerRemoveError> {
+        let num_updated = diesel::update(
+            crate_owners::table
+                .filter(crate_owners::crate_id.eq(self.id))
+                .filter(crate_owners::owner_id.eq(user_id))
+                .filter(crate_owners::owner_kind.eq(OwnerKind::User as i32))
+                .filter(crate_owners::deleted.eq(false)),
+        )
+        .set(crate_owners::deleted.eq(true))
+        .execute(&mut conn)
+        .await?;
+
+        if num_updated == 0 {
+            return Err(OwnerRemoveError::not_found(&format!("user id {user_id}")));
+        }
+
+        Ok(())
+    }
+
     pub async fn owner_remove(
         &self,
         mut conn: &AsyncPgConnection,

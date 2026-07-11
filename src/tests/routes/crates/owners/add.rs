@@ -1,7 +1,8 @@
-use crate::builders::CrateBuilder;
+use crate::builders::{CrateBuilder, UserBuilder};
 use crate::owners::expire_invitation;
 use crate::util::{RequestHelper, TestApp};
 use crates_io::models::token::{CrateScope, EndpointScope};
+use crates_io::models::{CrateOwner, NewEmail};
 use insta::assert_snapshot;
 
 // This is testing Cargo functionality! ! !
@@ -382,4 +383,257 @@ async fn no_invite_emails_for_txn_rollback() {
 
     // 9 emails to the good invitees should have been sent.
     assert_eq!(app.emails().await.len(), 9);
+}
+
+/// When username == gh_login (the common case), unprefixed add should work
+/// without any disambiguation error.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_owner_unprefixed_no_ambiguity() {
+    let (app, _, owner) = TestApp::init().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    app.db_new_user("new_owner").await;
+    CrateBuilder::new("my_crate", owner.as_model().id)
+        .expect_build(&mut conn)
+        .await;
+
+    let response = owner.add_named_owner("my_crate", "new_owner").await;
+    assert_snapshot!(response.status(), @"200 OK");
+    assert_snapshot!(response.text(), @r#"{"msg":"user new_owner has been invited to be an owner of crate my_crate","ok":true}"#);
+}
+
+/// When a user has a different crates.io username and GitHub login,
+/// unprefixed add by crates.io username should return a disambiguation error.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_owner_unprefixed_disambiguation_error() {
+    let (app, _, owner) = TestApp::init().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    // Create a user with different username and gh_login
+    let new_user = UserBuilder::new()
+        .with_username("cratesio_name")
+        .with_gh_login("github_name")
+        .new_user();
+    let id = new_user.insert(&conn).await.unwrap();
+    NewEmail::builder()
+        .user_id(id)
+        .email("test@example.com")
+        .verified(true)
+        .build()
+        .insert(&conn)
+        .await
+        .unwrap();
+
+    CrateBuilder::new("my_crate", owner.as_model().id)
+        .expect_build(&mut conn)
+        .await;
+
+    // Trying to add by the crates.io username should trigger disambiguation
+    let response = owner
+        .add_named_owner("my_crate", "cratesio_name")
+        .await;
+    assert_snapshot!(response.status(), @"400 Bad Request");
+    let text = response.text();
+    assert!(
+        text.contains("possibly ambiguous"),
+        "Expected disambiguation error, got: {text}"
+    );
+    assert!(
+        text.contains("cratesio:cratesio_name"),
+        "Expected cratesio: suggestion, got: {text}"
+    );
+    assert!(
+        text.contains("github:github_name"),
+        "Expected github: suggestion, got: {text}"
+    );
+}
+
+/// Using `cratesio:` prefix should look up by crates.io username only.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_owner_with_cratesio_prefix() {
+    let (app, _, owner) = TestApp::init().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    // Create a user with different username and gh_login
+    let new_user = UserBuilder::new()
+        .with_username("cratesio_name")
+        .with_gh_login("github_name")
+        .new_user();
+    let id = new_user.insert(&conn).await.unwrap();
+    NewEmail::builder()
+        .user_id(id)
+        .email("test@example.com")
+        .verified(true)
+        .build()
+        .insert(&conn)
+        .await
+        .unwrap();
+
+    CrateBuilder::new("my_crate", owner.as_model().id)
+        .expect_build(&mut conn)
+        .await;
+
+    let response = owner
+        .add_named_owner("my_crate", "cratesio:cratesio_name")
+        .await;
+    assert_snapshot!(response.status(), @"200 OK");
+    assert_snapshot!(response.text(), @r#"{"msg":"user github_name has been invited to be an owner of crate my_crate","ok":true}"#);
+}
+
+/// Using `github:` prefix should look up by GitHub login only.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_owner_with_github_prefix() {
+    let (app, _, owner) = TestApp::init().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    // Create a user with different username and gh_login
+    let new_user = UserBuilder::new()
+        .with_username("cratesio_name")
+        .with_gh_login("github_name")
+        .new_user();
+    let id = new_user.insert(&conn).await.unwrap();
+    NewEmail::builder()
+        .user_id(id)
+        .email("test@example.com")
+        .verified(true)
+        .build()
+        .insert(&conn)
+        .await
+        .unwrap();
+
+    CrateBuilder::new("my_crate", owner.as_model().id)
+        .expect_build(&mut conn)
+        .await;
+
+    let response = owner
+        .add_named_owner("my_crate", "github:github_name")
+        .await;
+    assert_snapshot!(response.status(), @"200 OK");
+    assert_snapshot!(response.text(), @r#"{"msg":"user github_name has been invited to be an owner of crate my_crate","ok":true}"#);
+}
+
+/// `cratesio:` prefix with a nonexistent username should return an error.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_owner_cratesio_prefix_unknown_user() {
+    let (app, _, owner) = TestApp::init().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    CrateBuilder::new("my_crate", owner.as_model().id)
+        .expect_build(&mut conn)
+        .await;
+
+    let response = owner
+        .add_named_owner("my_crate", "cratesio:nonexistent")
+        .await;
+    assert_snapshot!(response.status(), @"400 Bad Request");
+    assert_snapshot!(response.text(), @r#"{"errors":[{"detail":"could not find user with crates.io username `nonexistent`"}]}"#);
+}
+
+/// `github:` prefix with a nonexistent login should return an error.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_owner_github_prefix_unknown_user() {
+    let (app, _, owner) = TestApp::init().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    CrateBuilder::new("my_crate", owner.as_model().id)
+        .expect_build(&mut conn)
+        .await;
+
+    let response = owner
+        .add_named_owner("my_crate", "github:nonexistent")
+        .await;
+    assert_snapshot!(response.status(), @"400 Bad Request");
+    assert_snapshot!(response.text(), @r#"{"errors":[{"detail":"could not find user with GitHub login `nonexistent`"}]}"#);
+}
+
+/// Unknown prefix should return an error.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_owner_unknown_prefix() {
+    let (app, _, owner) = TestApp::init().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    CrateBuilder::new("my_crate", owner.as_model().id)
+        .expect_build(&mut conn)
+        .await;
+
+    let response = owner
+        .add_named_owner("my_crate", "gitlab:someone")
+        .await;
+    assert_snapshot!(response.status(), @"400 Bad Request");
+    assert_snapshot!(response.text(), @r#"{"errors":[{"detail":"unknown prefix; valid prefixes are `cratesio:` and `github:`"}]}"#);
+}
+
+/// Looking up by GitHub login when the crates.io username is different
+/// should trigger a disambiguation error.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_owner_unprefixed_by_gh_login_disambiguation_error() {
+    let (app, _, owner) = TestApp::init().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    // Create a user with different username and gh_login
+    let new_user = UserBuilder::new()
+        .with_username("cratesio_name")
+        .with_gh_login("github_name")
+        .new_user();
+    let id = new_user.insert(&conn).await.unwrap();
+    NewEmail::builder()
+        .user_id(id)
+        .email("test@example.com")
+        .verified(true)
+        .build()
+        .insert(&conn)
+        .await
+        .unwrap();
+
+    CrateBuilder::new("my_crate", owner.as_model().id)
+        .expect_build(&mut conn)
+        .await;
+
+    // Trying to add by the GitHub login (not the crates.io username) should
+    // also trigger disambiguation
+    let response = owner
+        .add_named_owner("my_crate", "github_name")
+        .await;
+    assert_snapshot!(response.status(), @"400 Bad Request");
+    let text = response.text();
+    assert!(
+        text.contains("possibly ambiguous"),
+        "Expected disambiguation error, got: {text}"
+    );
+    assert!(
+        text.contains("cratesio:cratesio_name"),
+        "Expected cratesio: suggestion, got: {text}"
+    );
+    assert!(
+        text.contains("github:github_name"),
+        "Expected github: suggestion, got: {text}"
+    );
+}
+
+/// When using the `cratesio:` prefix and the user is already an owner,
+/// it should return the "already an owner" error.
+#[tokio::test(flavor = "multi_thread")]
+async fn add_owner_already_owner_with_cratesio_prefix() {
+    let (app, _, owner) = TestApp::init().with_user().await;
+    let mut conn = app.db_conn().await;
+
+    let existing_owner = app.db_new_user("existing_owner").await;
+    let krate = CrateBuilder::new("my_crate", owner.as_model().id)
+        .expect_build(&mut conn)
+        .await;
+
+    CrateOwner::builder()
+        .crate_id(krate.id)
+        .user_id(existing_owner.as_model().id)
+        .created_by(owner.as_model().id)
+        .build()
+        .insert(&conn)
+        .await
+        .unwrap();
+
+    let response = owner
+        .add_named_owner("my_crate", "cratesio:existing_owner")
+        .await;
+    assert_snapshot!(response.status(), @"400 Bad Request");
+    assert_snapshot!(response.text(), @r#"{"errors":[{"detail":"`existing_owner` is already an owner"}]}"#);
 }

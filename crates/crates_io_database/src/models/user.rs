@@ -51,6 +51,34 @@ impl User {
             .await
     }
 
+    /// Look up a user by their crates.io username (`users.username`).
+    pub async fn find_by_username(
+        mut conn: &AsyncPgConnection,
+        username: &str,
+    ) -> QueryResult<Option<User>> {
+        User::query()
+            .filter(lower(users::username).eq(username.to_lowercase()))
+            .filter(users::gh_id.ne(-1))
+            .order(users::gh_id.desc())
+            .first(&mut conn)
+            .await
+            .optional()
+    }
+
+    /// Look up a user by their GitHub login (`users.gh_login`).
+    pub async fn find_by_gh_login(
+        mut conn: &AsyncPgConnection,
+        gh_login: &str,
+    ) -> QueryResult<Option<User>> {
+        User::query()
+            .filter(lower(users::gh_login).eq(gh_login.to_lowercase()))
+            .filter(users::gh_id.ne(-1))
+            .order(users::gh_id.desc())
+            .first(&mut conn)
+            .await
+            .optional()
+    }
+
     pub async fn owning(krate: &Crate, mut conn: &AsyncPgConnection) -> QueryResult<Vec<Owner>> {
         let users = CrateOwner::by_owner_kind(OwnerKind::User)
             .inner_join(users::table.left_join(oauth_github::table))
